@@ -10,7 +10,7 @@ export const CONFIG = {
     INITIAL_BALANCE: 10.00,
     TICK_INTERVAL: 333, // Price check interval in ms
     SESSION_SYNC_INTERVAL: 15000, // Market session sync interval in ms
-    
+
     // Environment Variables
     PRIVATE_KEY: process.env.PRIVATE_KEY,
     SIGNATURE_TYPE: parseInt(process.env.SIGNATURE_TYPE || '0'),
@@ -57,10 +57,10 @@ export const CONFIG = {
     
     // Exit Strategy
     EXIT: {
-        TRAILING_STOP_PERCENT: 0.92, // 15% trailing stop
-        MIN_PROFIT_LOCK: 1.08, // 15% minimum profit lock
-        MIN_PROFIT_FOR_TRAILING: 1.10, // 15% profit to activate trailing
-        TRAILING_TICKS: 3, // Ticks below trailing before exit
+        TRAILING_STOP_PERCENT: 0.95, // 15% trailing stop
+        MIN_PROFIT_LOCK: 1.10, // 15% minimum profit lock
+        MIN_PROFIT_FOR_TRAILING: 1.08, // 15% profit to activate trailing
+        TRAILING_TICKS: 1.5, // Ticks below trailing before exit
         SESSION_END_THRESHOLD: 10, // Seconds before session end to force exit
     },
     
