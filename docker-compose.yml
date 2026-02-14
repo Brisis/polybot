@@ -3,35 +3,31 @@ version: "3.8"
 services:
   vpn:
     image: qmcgaw/gluetun
-    container_name: polymarket-vpn
+    container_name: vpn
     cap_add:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
-      # ProtonVPN Configuration
       - VPN_SERVICE_PROVIDER=protonvpn
       - VPN_TYPE=openvpn
       - OPENVPN_USER=${OPENVPN_USER}
       - OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
-      - SERVER_COUNTRIES=Romania
+      - SERVER_COUNTRIES=Netherlands
+      # ❌ REMOVE THIS — you're paying for ProtonVPN!
+      # - FREE_ONLY=on
 
-      # DNS Configuration (fixes timeout issues)
-      - DOT=off # Disable DNS-over-TLS
-      - DNS_ADDRESS=1.1.1.1 # Use Cloudflare DNS
-      - DNS_KEEP_NAMESERVER=on # Keep DNS even if VPN pushes its own
-      - BLOCK_MALICIOUS=off # Disable block list downloading
+      # ✅ DNS Fixes
+      - DOT=off # Disable DNS-over-TLS (can cause timeouts)
+      - DNS_ADDRESS=1.1.1.1 # Use Cloudflare as primary DNS
+      - DNS_KEEP_NAMESERVER=on # Keep the DNS server even if VPN pushes its own
+      - BLOCK_MALICIOUS=off # Disable block list downloading (this is what's failing!)
       - BLOCK_SURVEILLANCE=off # Disable block list downloading
       - BLOCK_ADS=off # Disable block list downloading
-
-      # Health & Reconnect Settings
+      # ✅ Health/reconnect
       - HEALTH_VPN_DURATION_INITIAL=10s
       - HEALTH_VPN_DURATION_ADDITION=5s
       - HEALTH_SUCCESS_WAIT_DURATION=5s
-
-      # Firewall (recommended for trading bot)
-      - FIREWALL_OUTBOUND_SUBNETS=0.0.0.0/0 # Allow all outbound
-
     dns:
       - 1.1.1.1 # Cloudflare
       - 8.8.8.8 # Google (fallback)
@@ -58,11 +54,11 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  polymarket-bot:
+  poly-bot:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: polymarket-trading-bot
+    container_name: poly-trading-bot
 
     # Use VPN network - all traffic goes through ProtonVPN
     network_mode: "service:vpn"

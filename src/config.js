@@ -60,7 +60,7 @@ export const CONFIG = {
         TRAILING_STOP_PERCENT: 0.92, // 15% trailing stop
         MIN_PROFIT_LOCK: 1.08, // 15% minimum profit lock
         MIN_PROFIT_FOR_TRAILING: 1.10, // 15% profit to activate trailing
-        TRAILING_TICKS: 1, // Ticks below trailing before exit
+        TRAILING_TICKS: 3, // Ticks below trailing before exit
         SESSION_END_THRESHOLD: 10, // Seconds before session end to force exit
     },
     

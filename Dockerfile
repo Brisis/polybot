@@ -10,12 +10,11 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production && \
+RUN npm install --omit=dev && \
     npm cache clean --force
 
-# Copy application files
-COPY *.js ./
-COPY .env* ./
+# Copy source code
+COPY . .
 
 # Create logs directory
 RUN mkdir -p logs && \
@@ -32,4 +31,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 ENTRYPOINT ["dumb-init", "--"]
 
 # Start the bot
-CMD ["node", "index.js"]
+CMD ["npm", "start"]
