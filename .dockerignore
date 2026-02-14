@@ -1,0 +1,44 @@
+node_modules/
+npm-debug.log
+package-lock.json
+
+# Logs
+logs/
+*.log
+logs_trade_*.csv
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+QUICKSTART.md
+BUGFIX.md
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Environment files (will be mounted as volumes)
+.env.example
+.env.docker
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test/
+*.test.js
+
+# Temporary files
+*.tmp
+*.temp

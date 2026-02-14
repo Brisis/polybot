@@ -1,0 +1,113 @@
+version: "3.8"
+
+services:
+  vpn:
+    image: qmcgaw/gluetun
+    container_name: polymarket-vpn
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      # ProtonVPN Configuration
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=openvpn
+      - OPENVPN_USER=${OPENVPN_USER}
+      - OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
+      - SERVER_COUNTRIES=Romania
+
+      # DNS Configuration (fixes timeout issues)
+      - DOT=off # Disable DNS-over-TLS
+      - DNS_ADDRESS=1.1.1.1 # Use Cloudflare DNS
+      - DNS_KEEP_NAMESERVER=on # Keep DNS even if VPN pushes its own
+      - BLOCK_MALICIOUS=off # Disable block list downloading
+      - BLOCK_SURVEILLANCE=off # Disable block list downloading
+      - BLOCK_ADS=off # Disable block list downloading
+
+      # Health & Reconnect Settings
+      - HEALTH_VPN_DURATION_INITIAL=10s
+      - HEALTH_VPN_DURATION_ADDITION=5s
+      - HEALTH_SUCCESS_WAIT_DURATION=5s
+
+      # Firewall (recommended for trading bot)
+      - FIREWALL_OUTBOUND_SUBNETS=0.0.0.0/0 # Allow all outbound
+
+    dns:
+      - 1.1.1.1 # Cloudflare
+      - 8.8.8.8 # Google (fallback)
+
+    volumes:
+      - gluetun-data:/gluetun
+
+    ports:
+      # Expose Gluetun HTTP control server (optional, for debugging)
+      - "8000:8000"
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  polymarket-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: polymarket-trading-bot
+
+    # Use VPN network - all traffic goes through ProtonVPN
+    network_mode: "service:vpn"
+
+    restart: unless-stopped
+
+    environment:
+      # Polymarket Bot Configuration
+      - PRIVATE_KEY=${PRIVATE_KEY}
+      - SIGNATURE_TYPE=${SIGNATURE_TYPE:-1}
+      - FUNDER_ADDRESS=${FUNDER_ADDRESS}
+      - MOCK_MODE=${MOCK_MODE:-false}
+
+      # Node Environment
+      - NODE_ENV=production
+      - TZ=UTC
+
+    env_file:
+      - .env
+
+    depends_on:
+      vpn:
+        condition: service_healthy
+
+    volumes:
+      # Mount logs directory for persistent logging
+      - ./logs:/app/logs
+
+      # Optional: mount .env for easy config changes
+      - ./.env:/app/.env:ro
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Healthcheck for the bot
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  gluetun-data:
+    driver: local

@@ -1,0 +1,319 @@
+import { ClobClient } from '@polymarket/clob-client';
+import { Wallet } from 'ethers';
+import { CONFIG, validateConfig } from './src/config.js';
+import { logger } from './src/utils/logger.js';
+import { MarketSession } from './src/market.js';
+import { TradingStrategy } from './src/strategy.js';
+import { Trader } from './src/trader.js';
+
+class PolymarketBot {
+    constructor() {
+        this.publicClient = null;
+        this.authClient = null;
+        this.market = new MarketSession();
+        this.strategy = new TradingStrategy();
+        this.trader = null;
+    }
+
+    /**
+     * Initialize the bot
+     */
+    async initialize() {
+        try {
+            // Validate configuration
+            validateConfig();
+
+            logger.step('Initializing Polymarket Trading Bot...');
+            logger.info(`Mode: ${CONFIG.MOCK_MODE ? 'MOCK TRADING' : 'LIVE TRADING'}`);
+
+            // Create signer from private key
+            const signer = new Wallet(CONFIG.PRIVATE_KEY);
+            const walletAddress = signer.address;
+            
+            logger.info(`Wallet: ${walletAddress}`);
+
+            // Initialize public client (no auth needed)
+            this.publicClient = new ClobClient(
+                CONFIG.HOST, 
+                CONFIG.CHAIN_ID
+            );
+
+            logger.success('Public client initialized');
+
+            // Initialize authenticated client for trading
+            if (!CONFIG.MOCK_MODE) {
+                try {
+                    const l1Client = new ClobClient(
+                        CONFIG.HOST,
+                        CONFIG.CHAIN_ID,
+                        signer,
+                        undefined,
+                        CONFIG.SIGNATURE_TYPE,
+                        CONFIG.FUNDER_ADDRESS
+                    );
+
+                    logger.info('Deriving API credentials...');
+                    const creds = await l1Client.deriveApiKey();
+
+                    this.authClient = new ClobClient(
+                        CONFIG.HOST,
+                        CONFIG.CHAIN_ID,
+                        signer,
+                        creds,
+                        CONFIG.SIGNATURE_TYPE,
+                        CONFIG.FUNDER_ADDRESS
+                    );
+
+                    logger.success('Authenticated client initialized');
+                } catch (error) {
+                    logger.error(`Authentication failed: ${error.message}`);
+                    logger.warning('Falling back to mock mode');
+                    CONFIG.MOCK_MODE = true;
+                }
+            }
+
+            // Use authenticated client if available, otherwise public
+            const tradingClient = this.authClient || this.publicClient;
+            this.trader = new Trader(tradingClient, this.market);
+
+            // Sync to current market session
+            await this.market.sync();
+
+            // Update initial balance
+            await this.trader.updateBalance();
+            
+            const balance = this.trader.getBalance();
+            logger.success(
+                `Bot initialized | Balance: $${balance.toFixed(2)} | ` +
+                `Session: ${this.market.currentSlug}`
+            );
+
+            return true;
+        } catch (error) {
+            logger.error(`Initialization failed: ${error.message}`);
+            return false;
+        }
+    }
+
+    /**
+     * Main trading loop - check prices and execute strategy
+     */
+    async tick() {
+        if (!this.market.isReady()) {
+            return;
+        }
+
+        try {
+            // Get current prices
+            const prices = await this.trader.getPrices();
+            if (!prices) return;
+
+            const { up, down } = prices;
+            const { secondsLeft, sessionProgress } = this.market.getTimeRemaining();
+
+            // Log current state
+            const balance = this.trader.getBalance();
+            logger.feed(
+                up.toFixed(3),
+                down.toFixed(3),
+                this.trader.realBalance.toFixed(2),
+                balance.toFixed(2),
+                this.market.currentSlug,
+                secondsLeft,
+                sessionProgress,
+                this.strategy.position,
+                CONFIG.MOCK_MODE ? 'mock' : 'live'
+            );
+
+            // Evaluate strategy
+            await this.evaluateStrategy(up, down, secondsLeft, balance);
+
+        } catch (error) {
+            logger.error(`Tick error: ${error.message}`);
+        }
+    }
+
+    /**
+     * Evaluate and execute trading strategy
+     */
+    async evaluateStrategy(up, down, secondsLeft, balance) {
+        // Check for buy signal
+        if (!this.strategy.position) {
+            const buySignal = this.strategy.evaluateBuySignal(up, down, secondsLeft);
+
+            if (buySignal) {
+                await this.executeBuy(buySignal, balance);
+            }
+        }
+        // Check for sell signal
+        else {
+            const currentPrice = this.strategy.position === 'UP' ? up : down;
+            const sellSignal = this.strategy.evaluateSellSignal(currentPrice, secondsLeft);
+
+            if (sellSignal) {
+                await this.executeSell(sellSignal, currentPrice, up, down);
+            }
+        }
+    }
+
+    /**
+     * Execute buy order
+     */
+    async executeBuy(signal, balance) {
+        try {
+            const investmentAmount = balance * signal.positionSize;
+
+            // Check if we have sufficient balance
+            if (!this.trader.hasSufficientBalance(investmentAmount)) {
+                logger.warning(`Insufficient balance: $${balance.toFixed(2)} < $${investmentAmount.toFixed(2)}`);
+                return;
+            }
+
+            // Place the order
+            logger.info(`Executing BUY: ${signal.side} at $${signal.price.toFixed(3)}`);
+            const orderResult = await this.trader.placeBuyOrder(
+                signal.side,
+                signal.price,
+                investmentAmount
+            );
+
+            if (orderResult.success) {
+                // Update strategy state
+                const result = this.strategy.executeBuy(signal, balance);
+
+                logger.trade(
+                    `[${signal.strategy}] BUY ${signal.side} at $${signal.price.toFixed(3)} | ` +
+                    `Invested: $${result.investmentAmount.toFixed(2)} (${(signal.positionSize * 100).toFixed(0)}%) | ` +
+                    `Shares: ${result.shares.toFixed(2)} | ` +
+                    `15% Trailing Stop | ` +
+                    `Max Hold: ${signal.maxHoldTime}s | ` +
+                    `Time Left: ${this.market.getTimeRemaining().secondsLeft}s`,
+                    {
+                        up: signal.upPrice,
+                        down: signal.downPrice,
+                        position: signal.side,
+                        mock: CONFIG.MOCK_MODE
+                    },
+                    {
+                        currentSlug: this.market.currentSlug,
+                        realBalance: this.trader.realBalance.toFixed(2),
+                        mockBalance: this.trader.balance.toFixed(2)
+                    }
+                );
+
+                // Balance already updated in trader.placeBuyOrder()
+            } else {
+                logger.error(`Buy order failed: ${orderResult.error}`);
+            }
+
+        } catch (error) {
+            logger.error(`Execute buy error: ${error.message}`);
+        }
+    }
+
+    /**
+     * Execute sell order
+     */
+    async executeSell(signal, currentPrice, up, down) {
+        try {
+            logger.info(`Executing SELL: ${this.strategy.position} at $${currentPrice.toFixed(3)}`);
+            
+            const orderResult = await this.trader.placeSellOrder(
+                this.strategy.position,
+                currentPrice,
+                this.strategy.shares
+            );
+
+            if (orderResult.success) {
+                // Update strategy state
+                const result = this.strategy.executeSell(currentPrice);
+
+                logger.trade(
+                    `${signal.emoji} SOLD ${result.position} at $${currentPrice.toFixed(3)} | ` +
+                    `Multiple: ${signal.currentMultiple.toFixed(2)}x (Peak: ${signal.peakMultiple.toFixed(2)}x) | ` +
+                    `Reason: ${signal.reason} | ` +
+                    `Hold Time: ${signal.holdTimeSeconds.toFixed(1)}s | ` +
+                    `P&L: ${result.profitLoss >= 0 ? '+' : ''}$${result.profitLoss.toFixed(2)} ` +
+                    `(${result.profitLossPct >= 0 ? '+' : ''}${result.profitLossPct.toFixed(1)}%) | ` +
+                    `New Balance: $${this.trader.getBalance().toFixed(2)}`,
+                    {
+                        up,
+                        down,
+                        position: 'NONE',
+                        mock: CONFIG.MOCK_MODE
+                    },
+                    {
+                        currentSlug: this.market.currentSlug,
+                        realBalance: this.trader.realBalance.toFixed(2),
+                        mockBalance: this.trader.balance.toFixed(2)
+                    }
+                );
+
+                // Balance already updated in trader.placeSellOrder()
+
+                // Mark as stopped out if trailing stop
+                if (signal.isTrailingStop) {
+                    this.strategy.setStoppedOut();
+                }
+            } else {
+                logger.error(`Sell order failed: ${orderResult.error}`);
+            }
+
+        } catch (error) {
+            logger.error(`Execute sell error: ${error.message}`);
+        }
+    }
+
+    /**
+     * Handle new market session
+     */
+    async onNewSession() {
+        logger.step('New trading session detected');
+        this.strategy.resetForNewSession();
+        await this.trader.updateBalance();
+        
+        const balance = this.trader.getBalance();
+        logger.info(`Session Balance: $${balance.toFixed(2)}`);
+    }
+
+    /**
+     * Start the bot
+     */
+    async start() {
+        const initialized = await this.initialize();
+        if (!initialized) {
+            logger.error('Failed to initialize bot');
+            return;
+        }
+
+        // Main tick loop
+        const tickInterval = setInterval(async () => {
+            await this.tick();
+        }, CONFIG.TICK_INTERVAL);
+
+        // Market session sync loop
+        const syncInterval = setInterval(async () => {
+            const result = await this.market.sync();
+            if (result.newSession) {
+                await this.onNewSession();
+            }
+        }, CONFIG.SESSION_SYNC_INTERVAL);
+
+        logger.success('🤖 Bot started! Waiting for trading signals...\n');
+
+        // Graceful shutdown
+        process.on('SIGINT', () => {
+            logger.warning('\nShutting down bot...');
+            clearInterval(tickInterval);
+            clearInterval(syncInterval);
+            process.exit(0);
+        });
+    }
+}
+
+// Start the bot
+const bot = new PolymarketBot();
+bot.start().catch(error => {
+    logger.error(`Fatal error: ${error.message}`);
+    process.exit(1);
+});
