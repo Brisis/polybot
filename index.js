@@ -84,7 +84,7 @@ class PolymarketBot {
             
             const balance = this.trader.getBalance();
             logger.success(
-                `Bot initialized | Balance: $${balance.toFixed(2)} | ` +
+                `Bot initialized | Balance: $${balance} | ` +
                 `Session: ${this.market.currentSlug}`
             );
 
@@ -116,8 +116,8 @@ class PolymarketBot {
             logger.feed(
                 up.toFixed(3),
                 down.toFixed(3),
-                this.trader.realBalance.toFixed(2),
-                balance.toFixed(2),
+                this.trader.realBalance,
+                balance,
                 this.market.currentSlug,
                 secondsLeft,
                 sessionProgress,
@@ -165,7 +165,7 @@ class PolymarketBot {
 
             // Check if we have sufficient balance
             if (!this.trader.hasSufficientBalance(investmentAmount)) {
-                logger.warning(`Insufficient balance: $${balance.toFixed(2)} < $${investmentAmount.toFixed(2)}`);
+                logger.warning(`Insufficient balance: $${balance} < $${investmentAmount.toFixed(2)}`);
                 return;
             }
 
@@ -178,14 +178,16 @@ class PolymarketBot {
             );
 
             if (orderResult.success) {
-                // Update strategy state
+                // Update strategy state ONLY if buy succeeded
                 const result = this.strategy.executeBuy(signal, balance);
 
+                const attemptInfo = orderResult.attempts > 1 ? ` (${orderResult.attempts} attempts)` : '';
+
                 logger.trade(
-                    `[${signal.strategy}] BUY ${signal.side} at $${signal.price.toFixed(3)} | ` +
+                    `[${signal.strategy}] BUY ${signal.side} at $${signal.price.toFixed(3)}${attemptInfo} | ` +
                     `Invested: $${result.investmentAmount.toFixed(2)} (${(signal.positionSize * 100).toFixed(0)}%) | ` +
                     `Shares: ${result.shares.toFixed(2)} | ` +
-                    `15% Trailing Stop | ` +
+                    `5% Trailing Stop (activates at 8% profit) | ` +
                     `Max Hold: ${signal.maxHoldTime}s | ` +
                     `Time Left: ${this.market.getTimeRemaining().secondsLeft}s`,
                     {
@@ -196,18 +198,35 @@ class PolymarketBot {
                     },
                     {
                         currentSlug: this.market.currentSlug,
-                        realBalance: this.trader.realBalance.toFixed(2),
-                        mockBalance: this.trader.balance.toFixed(2)
+                        realBalance: this.trader.realBalance,
+                        mockBalance: this.trader.balance
                     }
                 );
 
                 // Balance already updated in trader.placeBuyOrder()
             } else {
-                logger.error(`Buy order failed: ${orderResult.error}`);
+                // Buy failed after all retries
+                logger.error(`❌ Failed to buy ${signal.side} after ${orderResult.attempts || 0} attempts!`);
+                logger.error(`Error: ${orderResult.error}`);
+                logger.warning(`Skipping this entry. Will look for next opportunity.`);
+                
+                // Log to CSV for monitoring
+                const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+                logger.writeToCSV([
+                    time,
+                    this.market.currentSlug,
+                    this.trader.realBalance,
+                    this.trader.balance,
+                    'NONE',
+                    signal.upPrice,
+                    signal.downPrice,
+                    `ERROR: BUY FAILED - ${orderResult.error}`
+                ]);
             }
 
         } catch (error) {
             logger.error(`Execute buy error: ${error.message}`);
+            logger.error(error.stack);
         }
     }
 
@@ -225,11 +244,13 @@ class PolymarketBot {
             );
 
             if (orderResult.success) {
-                // Update strategy state
+                // Update strategy state ONLY if sell succeeded
                 const result = this.strategy.executeSell(currentPrice);
 
+                const attemptInfo = orderResult.attempts > 1 ? ` (${orderResult.attempts} attempts)` : '';
+
                 logger.trade(
-                    `${signal.emoji} SOLD ${result.position} at $${currentPrice.toFixed(3)} | ` +
+                    `${signal.emoji} SOLD ${result.position} at $${currentPrice.toFixed(3)}${attemptInfo} | ` +
                     `Multiple: ${signal.currentMultiple.toFixed(2)}x (Peak: ${signal.peakMultiple.toFixed(2)}x) | ` +
                     `Reason: ${signal.reason} | ` +
                     `Hold Time: ${signal.holdTimeSeconds.toFixed(1)}s | ` +
@@ -244,23 +265,78 @@ class PolymarketBot {
                     },
                     {
                         currentSlug: this.market.currentSlug,
-                        realBalance: this.trader.realBalance.toFixed(2),
-                        mockBalance: this.trader.balance.toFixed(2)
+                        realBalance: this.trader.realBalance,
+                        mockBalance: this.trader.balance
                     }
                 );
-
-                // Balance already updated in trader.placeSellOrder()
 
                 // Mark as stopped out if trailing stop
                 if (signal.isTrailingStop) {
                     this.strategy.setStoppedOut();
                 }
             } else {
-                logger.error(`Sell order failed: ${orderResult.error}`);
+                // Check if it's a liquidity issue
+                if (orderResult.error && orderResult.error.includes('No liquidity')) {
+                    // NO LIQUIDITY - Force close position to avoid being stuck
+                    logger.error(`💀 NO LIQUIDITY to sell ${this.strategy.position} at $${currentPrice.toFixed(3)}`);
+                    logger.warning(`Accepting position as LOSS. Clearing strategy state.`);
+                    
+                    // Force close the position in strategy
+                    const result = this.strategy.executeSell(currentPrice);
+                    
+                    logger.trade(
+                        `💀 FORCED EXIT (no liquidity) ${result.position} at $${currentPrice.toFixed(3)} | ` +
+                        `P&L: ${result.profitLoss >= 0 ? '+' : ''}$${result.profitLoss.toFixed(2)} ` +
+                        `(${result.profitLossPct >= 0 ? '+' : ''}${result.profitLossPct.toFixed(1)}%) | ` +
+                        `Tokens still held in wallet (worthless at this price)`,
+                        {
+                            up,
+                            down,
+                            position: 'NONE',
+                            mock: CONFIG.MOCK_MODE
+                        },
+                        {
+                            currentSlug: this.market.currentSlug,
+                            realBalance: this.trader.realBalance,
+                            mockBalance: this.trader.balance
+                        }
+                    );
+                    
+                    // Mark as stopped out if it was trailing stop
+                    if (signal.isTrailingStop) {
+                        this.strategy.setStoppedOut();
+                    }
+                } else {
+                    // Other error - keep position open and retry
+                    logger.error(`🚨 CRITICAL: Failed to sell ${this.strategy.position} after ${orderResult.attempts || 0} attempts!`);
+                    logger.error(`Error: ${orderResult.error}`);
+                    logger.warning(`Position remains OPEN. Will retry on next tick.`);
+                    logger.warning(`Current price: $${currentPrice.toFixed(3)}, Shares: ${this.strategy.shares.toFixed(2)}`);
+                    
+                    // DO NOT update strategy state - keep position open
+                    // Reset consecutive sells counter so it will try again immediately
+                    this.strategy.consecutiveSells = 0;
+                    this.strategy.ticksBelowTrailing = CONFIG.EXIT.TRAILING_TICKS;
+                    
+                    // Log to CSV for monitoring
+                    const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+                    logger.writeToCSV([
+                        time,
+                        this.market.currentSlug,
+                        this.trader.realBalance,
+                        this.trader.balance,
+                        this.strategy.position,
+                        up,
+                        down,
+                        `ERROR: SELL FAILED - ${orderResult.error}`
+                    ]);
+                }
             }
 
         } catch (error) {
-            logger.error(`Execute sell error: ${error.message}`);
+            logger.error(`🚨 Execute sell EXCEPTION: ${error.message}`);
+            logger.error(error.stack);
+            logger.warning(`Position remains OPEN. Will retry on next tick.`);
         }
     }
 
@@ -273,7 +349,7 @@ class PolymarketBot {
         await this.trader.updateBalance();
         
         const balance = this.trader.getBalance();
-        logger.info(`Session Balance: $${balance.toFixed(2)}`);
+        logger.info(`Session Balance: $${balance}`);
     }
 
     /**

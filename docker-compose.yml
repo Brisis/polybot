@@ -35,11 +35,7 @@ services:
     volumes:
       - gluetun-data:/gluetun
 
-    ports:
-      # Expose Gluetun HTTP control server (optional, for debugging)
-      - "8000:8000"
-
-    restart: unless-stopped
+    restart: always
 
     healthcheck:
       test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
@@ -63,7 +59,7 @@ services:
     # Use VPN network - all traffic goes through ProtonVPN
     network_mode: "service:vpn"
 
-    restart: unless-stopped
+    restart: always
 
     environment:
       # Polymarket Bot Configuration
@@ -95,15 +91,5 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-    # Healthcheck for the bot
-    healthcheck:
-      test: ["CMD", "node", "-e", "process.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-
 volumes:
   gluetun-data:
-    driver: local

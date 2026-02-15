@@ -8,12 +8,12 @@ export const CONFIG = {
     
     // Trading Configuration
     INITIAL_BALANCE: 10.00,
-    TICK_INTERVAL: 333, // Price check interval in ms
-    SESSION_SYNC_INTERVAL: 15000, // Market session sync interval in ms
+    TICK_INTERVAL: 500, // Price check interval in ms
+    SESSION_SYNC_INTERVAL: 20000, // Market session sync interval in ms
 
     // Environment Variables
     PRIVATE_KEY: process.env.PRIVATE_KEY,
-    SIGNATURE_TYPE: parseInt(process.env.SIGNATURE_TYPE || '0'),
+    SIGNATURE_TYPE: parseInt(process.env.SIGNATURE_TYPE || '1'),
     FUNDER_ADDRESS: process.env.FUNDER_ADDRESS,
     
     // Trading Mode
@@ -21,46 +21,46 @@ export const CONFIG = {
     
     // Strategy Parameters
     STRATEGY: {
-        LATE_REVERSAL: {
-            TIME_RANGE: [120, 180],
-            MIN_PRICE: 0.01,
-            MAX_PRICE: 0.10,
-            REQUIRED_STABILITY: 2,
-            MAX_HOLD_TIME: 120,
-            POSITION_SIZE: 0.40
-        },
-        MID_LATE_SELECTIVE: {
-            TIME_RANGE: [180, 270],
-            MIN_PRICE: 0.01,
-            MAX_PRICE: 0.15,
-            REQUIRED_STABILITY: 2,
-            MAX_HOLD_TIME: 120,
-            POSITION_SIZE: 0.40
-        },
+        // LATE_REVERSAL: {
+        //     TIME_RANGE: [120, 180],
+        //     MIN_PRICE: 0.01,
+        //     MAX_PRICE: 0.10,
+        //     REQUIRED_STABILITY: 2,
+        //     MAX_HOLD_TIME: 120,
+        //     POSITION_SIZE: 0.40
+        // },
+        // MID_LATE_SELECTIVE: {
+        //     TIME_RANGE: [180, 270],
+        //     MIN_PRICE: 0.01,
+        //     MAX_PRICE: 0.15,
+        //     REQUIRED_STABILITY: 2,
+        //     MAX_HOLD_TIME: 120,
+        //     POSITION_SIZE: 0.40
+        // },
         MID_CONSERVATIVE: {
-            TIME_RANGE: [270, 450],
+            TIME_RANGE: [360, 480],
             MIN_PRICE: 0.01,
             MAX_PRICE: 0.20,
             REQUIRED_STABILITY: 2,
             MAX_HOLD_TIME: 120,
-            POSITION_SIZE: 0.40
+            POSITION_SIZE: 0.20
         },
         EARLY_OPPORTUNISTIC: {
-            TIME_RANGE: [450, 800],
+            TIME_RANGE: [480, 800],
             MIN_PRICE: 0.01,
             MAX_PRICE: 0.25,
             REQUIRED_STABILITY: 2,
             MAX_HOLD_TIME: 150,
-            POSITION_SIZE: 0.40
+            POSITION_SIZE: 0.20
         }
     },
     
     // Exit Strategy
     EXIT: {
-        TRAILING_STOP_PERCENT: 0.95, // 15% trailing stop
+        TRAILING_STOP_PERCENT: 0.85, // 15% trailing stop
         MIN_PROFIT_LOCK: 1.10, // 15% minimum profit lock
-        MIN_PROFIT_FOR_TRAILING: 1.08, // 15% profit to activate trailing
-        TRAILING_TICKS: 1.5, // Ticks below trailing before exit
+        MIN_PROFIT_FOR_TRAILING: 1.20, // 15% profit to activate trailing
+        TRAILING_TICKS: 3, // Ticks below trailing before exit
         SESSION_END_THRESHOLD: 10, // Seconds before session end to force exit
     },
     

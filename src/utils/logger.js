@@ -27,6 +27,9 @@ export const logger = {
     
     warning: (msg) => console.warn(`⚠️  ${msg}`),
     
+    // Direct access to writeToCSV
+    writeToCSV: writeToCSV,
+    
     trade: (msg, details = {}, state) => {
         const mode = details.mock ? 'MOCK TRADE' : 'REAL TRADE';
         console.log(`\n💰 [${mode}] ${msg}\n`);
