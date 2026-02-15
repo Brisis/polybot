@@ -21,24 +21,24 @@ export const CONFIG = {
     
     // Strategy Parameters
     STRATEGY: {
-        // LATE_REVERSAL: {
-        //     TIME_RANGE: [120, 180],
-        //     MIN_PRICE: 0.01,
-        //     MAX_PRICE: 0.10,
-        //     REQUIRED_STABILITY: 2,
-        //     MAX_HOLD_TIME: 120,
-        //     POSITION_SIZE: 0.40
-        // },
-        // MID_LATE_SELECTIVE: {
-        //     TIME_RANGE: [180, 270],
-        //     MIN_PRICE: 0.01,
-        //     MAX_PRICE: 0.15,
-        //     REQUIRED_STABILITY: 2,
-        //     MAX_HOLD_TIME: 120,
-        //     POSITION_SIZE: 0.40
-        // },
+        LATE_REVERSAL: {
+            TIME_RANGE: [120, 180],
+            MIN_PRICE: 0.01,
+            MAX_PRICE: 0.10,
+            REQUIRED_STABILITY: 2,
+            MAX_HOLD_TIME: 120,
+            POSITION_SIZE: 0.40
+        },
+        MID_LATE_SELECTIVE: {
+            TIME_RANGE: [180, 270],
+            MIN_PRICE: 0.01,
+            MAX_PRICE: 0.15,
+            REQUIRED_STABILITY: 2,
+            MAX_HOLD_TIME: 120,
+            POSITION_SIZE: 0.40
+        },
         MID_CONSERVATIVE: {
-            TIME_RANGE: [360, 480],
+            TIME_RANGE: [270, 450],
             MIN_PRICE: 0.01,
             MAX_PRICE: 0.20,
             REQUIRED_STABILITY: 2,
@@ -46,13 +46,13 @@ export const CONFIG = {
             POSITION_SIZE: 0.20
         },
         EARLY_OPPORTUNISTIC: {
-            TIME_RANGE: [480, 800],
+            TIME_RANGE: [450, 800],
             MIN_PRICE: 0.01,
             MAX_PRICE: 0.25,
             REQUIRED_STABILITY: 2,
             MAX_HOLD_TIME: 150,
             POSITION_SIZE: 0.20
-        }
+        },
     },
     
     // Exit Strategy
