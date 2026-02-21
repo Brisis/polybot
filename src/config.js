@@ -7,7 +7,7 @@ export const CONFIG = {
     CHAIN_ID: 137,
     
     // Trading Configuration
-    INITIAL_BALANCE: 10.00,
+    INITIAL_BALANCE: 30.00,
     TICK_INTERVAL: 500, // Price check interval in ms
     SESSION_SYNC_INTERVAL: 20000, // Market session sync interval in ms
 
@@ -19,49 +19,34 @@ export const CONFIG = {
     // Trading Mode
     MOCK_MODE: process.env.MOCK_MODE === 'true', // Set to 'true' for mock trading
     
-    // Strategy Parameters
-    STRATEGY: {
-        // LATE_REVERSAL: {
-        //     TIME_RANGE: [120, 180],
-        //     MIN_PRICE: 0.01,
-        //     MAX_PRICE: 0.10,
-        //     REQUIRED_STABILITY: 2,
-        //     MAX_HOLD_TIME: 120,
-        //     POSITION_SIZE: 0.40
-        // },
-        // MID_LATE_SELECTIVE: {
-        //     TIME_RANGE: [180, 270],
-        //     MIN_PRICE: 0.01,
-        //     MAX_PRICE: 0.15,
-        //     REQUIRED_STABILITY: 2,
-        //     MAX_HOLD_TIME: 120,
-        //     POSITION_SIZE: 0.40
-        // },
-        MID_CONSERVATIVE: {
-            TIME_RANGE: [360, 480],
-            MIN_PRICE: 0.01,
-            MAX_PRICE: 0.20,
-            REQUIRED_STABILITY: 2,
-            MAX_HOLD_TIME: 120,
-            POSITION_SIZE: 0.20
-        },
-        EARLY_OPPORTUNISTIC: {
-            TIME_RANGE: [480, 800],
-            MIN_PRICE: 0.01,
-            MAX_PRICE: 0.25,
-            REQUIRED_STABILITY: 2,
-            MAX_HOLD_TIME: 150,
-            POSITION_SIZE: 0.20
-        }
+    // Trading Windows — only enter positions during these hours (local time)
+   TRADING_WINDOWS: [
+        { start: "04:40", end: "05:00" },
+        { start: "16:25", end: "16:35" },
+    ],
+
+    // BTC Real-Time Feed (Polymarket RTDS — Chainlink BTC/USD)
+    BTC_FEED: {
+        ENABLED:              true,  // Set false to bypass Gate 4 entirely
+        LOG_SNAPSHOT:         true,  // Log BTC snapshot on every buy signal evaluation
+        MIN_CONFIDENCE:       80,    // Minimum predictReversal confidence score (0-100) to enter
+        REVERSAL_WINDOW_SECS: 10,    // Velocity look-back for projected move calculation
     },
-    
-    // Exit Strategy
+
+    // Strategy: buy the losing (cheaper) side near session end at a very low price
+    STRATEGY: {
+        ENTRY_SECONDS_LEFT:  120,  // Only enter when ≤ this many seconds remain
+        MIN_ENTRY_SECONDS:   5,    // Don't enter if fewer than this many seconds remain
+        MIN_ENTRY_PRICE:     0.01, // Ignore prices below this (rounding noise)
+        MAX_ENTRY_PRICE:     0.02, // Maximum price to enter (the "cheap" losing side)
+        POSITION_SIZE:       0.40, // Fraction of balance to invest per trade
+        PROFIT_TARGET:       0.99, // Exit immediately when price hits this
+        FORCE_EXIT_SECONDS:  0,    // Force-exit when session has this many seconds left
+    },
+
+    // Exit guardrails (used for emergency / liquidity edge cases)
     EXIT: {
-        TRAILING_STOP_PERCENT: 0.85, // 15% trailing stop
-        MIN_PROFIT_LOCK: 1.10, // 15% minimum profit lock
-        MIN_PROFIT_FOR_TRAILING: 1.20, // 15% profit to activate trailing
-        TRAILING_TICKS: 3, // Ticks below trailing before exit
-        SESSION_END_THRESHOLD: 10, // Seconds before session end to force exit
+        EMERGENCY_EXIT_THRESHOLD: 0, // Seconds before session end → accept any price
     },
     
     // Order Configuration

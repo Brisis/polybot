@@ -5,6 +5,7 @@ import { logger } from './src/utils/logger.js';
 import { MarketSession } from './src/market.js';
 import { TradingStrategy } from './src/strategy.js';
 import { Trader } from './src/trader.js';
+import { BTCFeed } from './src/btc-feed.js';
 
 class PolymarketBot {
     constructor() {
@@ -13,6 +14,7 @@ class PolymarketBot {
         this.market = new MarketSession();
         this.strategy = new TradingStrategy();
         this.trader = null;
+        this.btcFeed = new BTCFeed();
     }
 
     /**
@@ -39,6 +41,11 @@ class PolymarketBot {
             );
 
             logger.success('Public client initialized');
+
+            // Start BTC real-time feed
+            // if (CONFIG.BTC_FEED.ENABLED) {
+            //     this.btcFeed.start();
+            // }
 
             // Initialize authenticated client for trading
             if (!CONFIG.MOCK_MODE) {
@@ -113,6 +120,7 @@ class PolymarketBot {
 
             // Log current state
             const balance = this.trader.getBalance();
+            const inWindow = this.strategy.isInTradingWindow();
             logger.feed(
                 up.toFixed(3),
                 down.toFixed(3),
@@ -122,7 +130,8 @@ class PolymarketBot {
                 secondsLeft,
                 sessionProgress,
                 this.strategy.position,
-                CONFIG.MOCK_MODE ? 'mock' : 'live'
+                CONFIG.MOCK_MODE ? 'mock' : 'live',
+                inWindow
             );
 
             // Evaluate strategy
@@ -139,7 +148,7 @@ class PolymarketBot {
     async evaluateStrategy(up, down, secondsLeft, balance) {
         // Check for buy signal
         if (!this.strategy.position) {
-            const buySignal = this.strategy.evaluateBuySignal(up, down, secondsLeft);
+            const buySignal = this.strategy.evaluateBuySignal(up, down, secondsLeft, this.btcFeed);
 
             if (buySignal) {
                 await this.executeBuy(buySignal, balance);
@@ -161,7 +170,7 @@ class PolymarketBot {
      */
     async executeBuy(signal, balance) {
         try {
-            const investmentAmount = balance * signal.positionSize;
+            const investmentAmount = 1; //balance * signal.positionSize;
 
             // Check if we have sufficient balance
             if (!this.trader.hasSufficientBalance(investmentAmount)) {
@@ -184,11 +193,11 @@ class PolymarketBot {
                 const attemptInfo = orderResult.attempts > 1 ? ` (${orderResult.attempts} attempts)` : '';
 
                 logger.trade(
-                    `[${signal.strategy}] BUY ${signal.side} at $${signal.price.toFixed(3)}${attemptInfo} | ` +
+                    `🚀 [${signal.strategy}] BUY ${signal.side} (losing side) at $${signal.price.toFixed(3)}${attemptInfo} | ` +
                     `Invested: $${result.investmentAmount.toFixed(2)} (${(signal.positionSize * 100).toFixed(0)}%) | ` +
                     `Shares: ${result.shares.toFixed(2)} | ` +
-                    `5% Trailing Stop (activates at 8% profit) | ` +
-                    `Max Hold: ${signal.maxHoldTime}s | ` +
+                    `Target: $${CONFIG.STRATEGY.PROFIT_TARGET} | ` +
+                    `Upside: ${(((CONFIG.STRATEGY.PROFIT_TARGET - signal.price) / signal.price) * 100).toFixed(1)}% | ` +
                     `Time Left: ${this.market.getTimeRemaining().secondsLeft}s`,
                     {
                         up: signal.upPrice,
@@ -201,7 +210,7 @@ class PolymarketBot {
                         realBalance: this.trader.realBalance,
                         mockBalance: this.trader.balance
                     }
-                );
+                ); 
 
                 // Balance already updated in trader.placeBuyOrder()
             } else {
@@ -235,6 +244,14 @@ class PolymarketBot {
      */
     async executeSell(signal, currentPrice, up, down) {
         try {
+            // Check for emergency exit warning
+            if (signal.isEmergencyExit && !signal.hasLiquidity) {
+                logger.warning(
+                    `🆘 EMERGENCY EXIT: Price $${currentPrice.toFixed(3)} is below liquidity threshold ` +
+                    `($${CONFIG.EXIT.MIN_SELL_PRICE}) but session is ending! Attempting sale...`
+                );
+            }
+
             logger.info(`Executing SELL: ${this.strategy.position} at $${currentPrice.toFixed(3)}`);
             
             const orderResult = await this.trader.placeSellOrder(
@@ -248,9 +265,16 @@ class PolymarketBot {
                 const result = this.strategy.executeSell(currentPrice);
 
                 const attemptInfo = orderResult.attempts > 1 ? ` (${orderResult.attempts} attempts)` : '';
+                
+                // Add liquidity status to trade log
+                const liquidityInfo = !signal.hasLiquidity 
+                    ? ` ⚠️  [BELOW LIQUIDITY THRESHOLD]` 
+                    : signal.isEmergencyExit 
+                        ? ` [EMERGENCY EXIT]`
+                        : '';
 
                 logger.trade(
-                    `${signal.emoji} SOLD ${result.position} at $${currentPrice.toFixed(3)}${attemptInfo} | ` +
+                    `${signal.emoji} SOLD ${result.position} at $${currentPrice.toFixed(3)}${attemptInfo}${liquidityInfo} | ` +
                     `Multiple: ${signal.currentMultiple.toFixed(2)}x (Peak: ${signal.peakMultiple.toFixed(2)}x) | ` +
                     `Reason: ${signal.reason} | ` +
                     `Hold Time: ${signal.holdTimeSeconds.toFixed(1)}s | ` +
@@ -279,6 +303,7 @@ class PolymarketBot {
                 if (orderResult.error && orderResult.error.includes('No liquidity')) {
                     // NO LIQUIDITY - Force close position to avoid being stuck
                     logger.error(`💀 NO LIQUIDITY to sell ${this.strategy.position} at $${currentPrice.toFixed(3)}`);
+                    logger.warning(`This confirms the liquidity issue - price was $${currentPrice.toFixed(3)}, below recommended $${CONFIG.EXIT.MIN_SELL_PRICE}`);
                     logger.warning(`Accepting position as LOSS. Clearing strategy state.`);
                     
                     // Force close the position in strategy
@@ -347,7 +372,14 @@ class PolymarketBot {
         logger.step('New trading session detected');
         this.strategy.resetForNewSession();
         await this.trader.updateBalance();
-        
+
+        // Set session peg from the live Chainlink price at this exact moment.
+        // Both the peg and all momentum calculations now come from the same source
+        // — Polymarket's own Chainlink feed — so session bias is accurate.
+        // if (CONFIG.BTC_FEED.ENABLED) {
+        //     this.btcFeed.setSessionPeg(this.btcFeed.latestPrice);
+        // }
+
         const balance = this.trader.getBalance();
         logger.info(`Session Balance: $${balance}`);
     }
@@ -371,7 +403,21 @@ class PolymarketBot {
         const syncInterval = setInterval(async () => {
             const result = await this.market.sync();
             if (result.newSession) {
-                await this.onNewSession();
+                // Save 120s volatility snapshot of the session that just closed
+                // before anything resets — slug is still the old one at this point
+                // if (CONFIG.BTC_FEED.ENABLED) {
+                //     this.btcFeed.saveSessionVolatility(this.market.currentSlug);
+                // }
+
+                // Don't reset until any open position is closed first
+                if (this.strategy.position) {
+                    logger.warning(
+                        `New session detected but position still open ` +
+                        `(${this.strategy.position}) -- waiting for exit before switching...`
+                    );
+                } else {
+                    await this.onNewSession();
+                }
             }
         }, CONFIG.SESSION_SYNC_INTERVAL);
 
@@ -382,6 +428,7 @@ class PolymarketBot {
             logger.warning('\nShutting down bot...');
             clearInterval(tickInterval);
             clearInterval(syncInterval);
+            //this.btcFeed.stop();
             process.exit(0);
         });
     }

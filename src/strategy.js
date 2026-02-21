@@ -13,8 +13,25 @@ export class TradingStrategy {
         this.consecutiveSells = 0;
         this.consecutiveBuyTicks = 0;
         this.wasStoppedOut = false;
-        this.leftBuys = 2;
+        this.leftBuys = 1; // Limit to 1 buy per session to manage risk
         this.hasTradedThisSession = false;
+    }
+
+    /**
+     * Check if current hour falls inside a configured trading window
+     */
+   isInTradingWindow() {
+        const now = new Date();
+        const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+        const gmt2Minutes = (utcMinutes + 120) % 1440; // +120 min offset, wrap at 24h
+
+        return CONFIG.TRADING_WINDOWS.some(w => {
+            const [startH, startM] = w.start.split(":").map(Number);
+            const [endH, endM]     = w.end.split(":").map(Number);
+            const start = startH * 60 + startM;
+            const end   = endH   * 60 + endM;
+            return gmt2Minutes >= start && gmt2Minutes < end;
+        });
     }
 
     /**
@@ -25,176 +42,155 @@ export class TradingStrategy {
         this.consecutiveBuyTicks = 0;
         this.consecutiveSells = 0;
         this.wasStoppedOut = false;
-        this.leftBuys = 2;
-    }
-
-    /**
-     * Get strategy parameters based on time remaining
-     */
-    getStrategyParams(secondsLeft) {
-        const strategies = CONFIG.STRATEGY;
-        
-        for (const [name, params] of Object.entries(strategies)) {
-            const [min, max] = params.TIME_RANGE;
-            if (secondsLeft >= min && secondsLeft < max) {
-                return { name, ...params };
-            }
-        }
-        
-        return null;
+        this.leftBuys = 1;
     }
 
     /**
      * Evaluate if we should enter a position
      */
-    evaluateBuySignal(upPrice, downPrice, secondsLeft) {
-        // Don't buy if we already have a position or used up buys or stopped out
-        if (this.position || this.leftBuys <= 0 || this.wasStoppedOut) {
-            return null;
-        }
+    evaluateBuySignal(upPrice, downPrice, secondsLeft, btcFeed = null) {
+        // Don't enter if already in a position, out of buys, or stopped out
+        if (this.position || this.leftBuys <= 0 || this.wasStoppedOut) return null;
 
-        const strategy = this.getStrategyParams(secondsLeft);
-        if (!strategy) {
-            this.consecutiveBuyTicks = 0;
-            return null;
-        }
+        // Gate 1: trading window
+        if (!this.isInTradingWindow()) return null;
 
-        const up = parseFloat(upPrice);
+        const strat = CONFIG.STRATEGY;
+
+        // Gate 2: time window — only enter with ≤ ENTRY_SECONDS_LEFT but ≥ MIN_ENTRY_SECONDS left
+        if (secondsLeft > strat.ENTRY_SECONDS_LEFT || secondsLeft < strat.MIN_ENTRY_SECONDS) return null;
+
+        const up   = parseFloat(upPrice);
         const down = parseFloat(downPrice);
-        const losingPrice = Math.min(up, down);
-        const losingSide = up < down ? 'UP' : 'DOWN';
 
-        // Check if price is in valid range
-        const isPriceInRange = losingPrice >= strategy.MIN_PRICE && 
-                              losingPrice <= strategy.MAX_PRICE;
+        // Losing side = the cheaper one
+        const losingSide  = up < down ? 'UP' : 'DOWN';
+        const loserPrice  = losingSide === 'UP' ? up : down;
 
-        if (isPriceInRange) {
-            this.consecutiveBuyTicks++;
-            
-            return {
-                side: losingSide,
-                price: losingPrice,
-                strategy: strategy.name,
-                positionSize: strategy.POSITION_SIZE,
-                maxHoldTime: strategy.MAX_HOLD_TIME,
-                upPrice: up,
-                downPrice: down
-            };
-        }
+        // Gate 3: price must be in the sweet-spot range (not noise, not too expensive)
+        if (loserPrice < strat.MIN_ENTRY_PRICE || loserPrice > strat.MAX_ENTRY_PRICE) return null;
 
-        this.consecutiveBuyTicks = 0;
-        return null;
+        // Gate 4: predict whether the reversal is plausible given BTC position,
+        // velocity, and historical session volatility
+        // if (btcFeed && CONFIG.BTC_FEED.ENABLED) {
+        //     const snap = btcFeed.getSnapshot();
+
+        //     if (CONFIG.BTC_FEED.LOG_SNAPSHOT) {
+        //         const bias = snap.sessionBias !== null
+        //             ? `${snap.sessionBias >= 0 ? '+' : ''}${snap.sessionBias.toFixed(3)}%`
+        //             : 'n/a';
+        //         const peg  = snap.sessionPeg ? `$${snap.sessionPeg.toFixed(2)}` : 'n/a';
+        //         logger.info(
+        //             `BTC $${snap.price?.toFixed(2) ?? 'n/a'} | Peg: ${peg} | ` +
+        //             `Bias: ${bias} | ` +
+        //             `Mom30s: ${snap.momentum30 !== null ? `${snap.momentum30 >= 0 ? '+' : ''}${snap.momentum30.toFixed(3)}%` : 'n/a'} | ` +
+        //             `Vel10s: ${snap.velocity10 !== null ? `${snap.velocity10 >= 0 ? '+' : ''}${snap.velocity10.toFixed(2)}$/s` : 'n/a'}`
+        //         );
+        //     }
+
+        //     const { plausible, confidence, details } = btcFeed.predictReversal(
+        //         losingSide,
+        //         secondsLeft,
+        //     );
+
+        //     if (!plausible || confidence < CONFIG.BTC_FEED.MIN_CONFIDENCE) {
+        //         logger.warning(`Gate 4 FAILED -- reversal unlikely (confidence: ${confidence}/100, min: ${CONFIG.BTC_FEED.MIN_CONFIDENCE})`);
+        //         return null;
+        //     }
+
+        //     logger.info(`Gate 4 PASSED -- reversal plausible (confidence: ${confidence}/100)`);
+        // }
+
+        const upside = ((strat.PROFIT_TARGET - loserPrice) / loserPrice * 100).toFixed(1);
+        logger.info(
+            `📡 Signal: ${losingSide} (losing side) @ $${loserPrice.toFixed(3)} | ` +
+            `Upside to target: ${upside}% | ${secondsLeft}s left`
+        );
+
+        return {
+            side:         losingSide,
+            price:        loserPrice,
+            strategy:     'LOSING_SIDE',
+            positionSize: strat.POSITION_SIZE,
+            maxHoldTime:  secondsLeft,
+            upPrice:      up,
+            downPrice:    down,
+        };
     }
 
     /**
      * Execute buy (update internal state)
      */
     executeBuy(signal, balance) {
-        const investmentAmount = balance * signal.positionSize;
-        
-        this.entryPrice = signal.price;
-        this.entryTime = Date.now();
-        this.shares = investmentAmount / signal.price;
-        this.position = signal.side;
-        this.maxHoldTime = signal.maxHoldTime;
-        this.peakPrice = signal.price;
+        const investmentAmount = 1; //balance * signal.positionSize;
+
+        this.entryPrice          = signal.price;
+        this.entryTime           = Date.now();
+        this.shares              = investmentAmount / signal.price;
+        this.position            = signal.side;
+        this.maxHoldTime         = signal.maxHoldTime;
+        this.peakPrice           = signal.price;
         this.hasTradedThisSession = true;
         this.leftBuys--;
         this.consecutiveBuyTicks = 0;
 
         return {
             investmentAmount,
-            shares: this.shares,
-            newBalance: balance - investmentAmount
+            shares:          this.shares,
+            newBalance:      balance - investmentAmount,
+            effectiveMinSell: CONFIG.STRATEGY.PROFIT_TARGET, // target is always $0.99
         };
     }
 
     /**
-     * Evaluate if we should exit position
+     * Evaluate if we should exit the position
      */
     evaluateSellSignal(currentPrice, secondsLeft) {
-        if (!this.position) {
-            return null;
-        }
+        if (!this.position) return null;
 
-        const now = Date.now();
-        const holdTimeSeconds = (now - this.entryTime) / 1000;
+        const strat = CONFIG.STRATEGY;
+        const now   = Date.now();
+        const holdTimeSeconds  = (now - this.entryTime) / 1000;
+        const currentMultiple  = currentPrice / this.entryPrice;
+        const peakMultiple     = this.peakPrice / this.entryPrice;
 
         // Track peak price
-        if (currentPrice > this.peakPrice) {
-            this.peakPrice = currentPrice;
+        if (currentPrice > this.peakPrice) this.peakPrice = currentPrice;
+
+        // ── EXIT CONDITIONS ──────────────────────────────────────────────
+        const isTarget    = currentPrice >= strat.PROFIT_TARGET;
+        const isForce     = secondsLeft  <= strat.FORCE_EXIT_SECONDS;
+        const isEmergency = secondsLeft  <  CONFIG.EXIT.EMERGENCY_EXIT_THRESHOLD;
+
+        if (isTarget || isForce || isEmergency) {
+            const reason = isTarget
+                ? `PROFIT TARGET ($${strat.PROFIT_TARGET})`
+                : isEmergency
+                    ? `EMERGENCY EXIT (<${CONFIG.EXIT.EMERGENCY_EXIT_THRESHOLD}s)`
+                    : `SESSION END (${secondsLeft}s left)`;
+
+            return {
+                reason,
+                isTrailingStop:   false,
+                isForceSell:      isForce || isEmergency,
+                isEmergencyExit:  isEmergency,
+                isMaxHoldExceeded: false,
+                hasLiquidity:     true,
+                currentMultiple,
+                peakMultiple,
+                holdTimeSeconds,
+                emoji: isTarget ? '🎯' : isEmergency ? '🆘' : '⏰',
+            };
         }
 
-        const currentMultiple = currentPrice / this.entryPrice;
-        const peakMultiple = this.peakPrice / this.entryPrice;
-
-        // Check if trailing stop should be active
-        const trailingIsActive = this.peakPrice >= this.entryPrice * CONFIG.EXIT.MIN_PROFIT_FOR_TRAILING;
-        
-        // Calculate stop price based on whether trailing is active
-        let effectiveStopPrice;
-        if (trailingIsActive) {
-            // Once trailing activates, ONLY use peak-based trailing (no min profit lock!)
-            effectiveStopPrice = this.peakPrice * CONFIG.EXIT.TRAILING_STOP_PERCENT;
-        } else {
-            // Before trailing activates, protect with min profit lock
-            const minProfitPrice = this.entryPrice * CONFIG.EXIT.MIN_PROFIT_LOCK;
-            effectiveStopPrice = minProfitPrice;
-        }
-
-        // Check trailing stop
-        let isTrailingStop = false;
-        if (trailingIsActive && currentPrice <= effectiveStopPrice) {
-            this.ticksBelowTrailing++;
-            if (this.ticksBelowTrailing >= CONFIG.EXIT.TRAILING_TICKS) {
-                isTrailingStop = true;
-            }
-        } else {
-            this.ticksBelowTrailing = 0;
-        }
-
-        // Check force sell conditions
-        let isForceSell = false;
-        let forceReason = "";
-
-        if (secondsLeft < CONFIG.EXIT.SESSION_END_THRESHOLD) {
-            isForceSell = true;
-            forceReason = `SESSION ENDING (<${CONFIG.EXIT.SESSION_END_THRESHOLD}s)`;
-        } else if (holdTimeSeconds >= this.maxHoldTime) {
-            isForceSell = true;
-            forceReason = `MAX HOLD (${this.maxHoldTime}s)`;
-        }
-
-        if (isTrailingStop || isForceSell) {
-            this.consecutiveSells++;
-            const needsConfirmation = !(isForceSell || isTrailingStop) && this.consecutiveSells < 2;
-
-            if (!needsConfirmation) {
-                return {
-                    reason: isTrailingStop 
-                        ? `TRAILING STOP (Peak: ${peakMultiple.toFixed(2)}x, -8%)`
-                        : forceReason,
-                    isTrailingStop,
-                    isForceSell,
-                    currentMultiple,
-                    peakMultiple,
-                    holdTimeSeconds,
-                    emoji: isTrailingStop ? "📉" : "⏰"
-                };
-            }
-        } else {
-            this.consecutiveSells = 0;
-            
-            // Log hold status periodically
-            if (holdTimeSeconds % 10 < 0.5 && holdTimeSeconds > 1) {
-                console.log(
-                    `   ⏳ Holding ${this.position}: ` +
-                    `Current: $${currentPrice.toFixed(3)} (${currentMultiple.toFixed(2)}x) | ` +
-                    `Peak: $${this.peakPrice.toFixed(3)} (${peakMultiple.toFixed(2)}x) | ` +
-                    `Trail Stop: $${effectiveStopPrice.toFixed(3)} | ` +
-                    `Ticks Below: ${this.ticksBelowTrailing}`
-                );
-            }
+        // ── HOLD STATUS LOG (every ~5 s) ─────────────────────────────────
+        if (holdTimeSeconds % 5 < 0.5 && holdTimeSeconds > 1) {
+            const pct = (currentMultiple - 1) * 100;
+            console.log(
+                `   ⏳ ${this.position}: $${currentPrice.toFixed(3)} ` +
+                `(${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%) | ` +
+                `~${secondsLeft}s left | target $${strat.PROFIT_TARGET}`
+            );
         }
 
         return null;
